@@ -1,0 +1,218 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="author" content="Heinrich Apfelmus" />
+  <meta name="date" content="Sun, 18 Apr 2010 13:06:16 +0200" />
+  <title>Documentation for the &quot;operational&quot; package</title>
+  <link rel="stylesheet" href="fptools.css" type="text/css" />
+</head>
+<body>
+<h1 class="title">Documentation for the &quot;operational&quot; package</h1>
+<div id="TOC">
+<ul>
+<li><a href="#introduction"><span class="toc-section-number">1</span> Introduction</a></li>
+<li><a href="#using-this-library"><span class="toc-section-number">2</span> Using this Library</a><ul>
+<li><a href="#changes-to-the-program-type"><span class="toc-section-number">2.1</span> Changes to the <code>Program</code> type</a></li>
+<li><a href="#efficiency"><span class="toc-section-number">2.2</span> Efficiency</a></li>
+<li><a href="#monad-transformers"><span class="toc-section-number">2.3</span> Monad Transformers</a></li>
+<li><a href="#alternatives-to-monad-transformers"><span class="toc-section-number">2.4</span> Alternatives to Monad Transformers</a></li>
+</ul></li>
+<li><a href="#design-and-implementation"><span class="toc-section-number">3</span> Design and Implementation</a><ul>
+<li><a href="#proof-of-the-monad-laws-sketch"><span class="toc-section-number">3.1</span> Proof of the monad laws (Sketch)</a></li>
+<li><a href="#monad-transformers-1"><span class="toc-section-number">3.2</span> Monad Transformers</a></li>
+</ul></li>
+<li><a href="#other-design-choices"><span class="toc-section-number">4</span> Other Design Choices</a><ul>
+<li><a href="#recursive-type-definitions-with-program"><span class="toc-section-number">4.1</span> Recursive type definitions with <code>Program</code></a></li>
+</ul></li>
+</ul>
+</div>
+<!-- *The HTML version of this document is generated automatically from the corresponding markdown file, don't change it!* -->
+
+<h1 id="introduction"><a href="#TOC"><span class="header-section-number">1</span> Introduction</a></h1>
+<p>This package is based on <a href="http://themonadreader.wordpress.com/2010/01/26/issue-15/">&quot;The Operational Monad Tutorial&quot;</a> and this documentation describes its extension to a production-quality library. In other words, the &quot;magic&quot; gap between relevant paper and library implementation is documented here.</p>
+<p>Take note that this this library is only ~50 lines of code, yet the documentation even includes a proof! :-)</p>
+<p>Sources and inspiration for this library include <a href="http://web.cecs.pdx.edu/~cklin/papers/unimo-143.pdf" title="Chuan-kai Lin. Programming Monads Operationally with Unimo.">Chuan-kai Lin's unimo paper</a>, <a href="http://citeseer.ist.psu.edu/hughes95design.html" title="John Hughes. The Design of a Pretty-printing Library.">John Hughes 95</a>, and <a href="http://hackage.haskell.org/package/MonadPrompt" title="Ryan Ingram's Monad Prompt Package.">Ryan Ingram's <code>MonadPrompt</code> package</a>.</p>
+<h1 id="using-this-library"><a href="#TOC"><span class="header-section-number">2</span> Using this Library</a></h1>
+<p>To understand what's going on, you'll have to read <a href="http://themonadreader.wordpress.com/2010/01/26/issue-15/">&quot;The Operational Monad Tutorial&quot;</a>. Here, I will first and foremost note the changes with respect to the tutorial.</p>
+<p>Several advanced <a href="./examples.html">example monads</a> demonstrate how to put this library to good use. In the source distribution, the corresponding source files can also be found in the <code>.docs/examples</code> folder.</p>
+<h2 id="changes-to-the-program-type"><a href="#TOC"><span class="header-section-number">2.1</span> Changes to the <code>Program</code> type</a></h2>
+<p>For efficiency reasons, the type <code>Program</code> representing a list of instructions is now <em>abstract</em>. A function <code>view</code> is used to inspect the first instruction, it returns a type</p>
+<pre><code>data ProgramView instr a where
+    Return :: a -&gt; ProgramView instr a
+    (:&gt;&gt;=) :: instr a -&gt; (a -&gt; Program instr b) -&gt; ProgramView instr b
+</code></pre>
+<p>which is much like the old <code>Program</code> type, except that <code>Then</code> was renamed to <code>:&gt;&gt;=</code> and that the subsequent instructions stored in the second argument of <code>:&gt;&gt;=</code> are stored in the type <code>Program</code>, not <code>ProgramView</code>.</p>
+<p>To see an example of the new style, here the interpreter for the stack machine from the tutorial:</p>
+<pre><code>interpret :: StackProgram a -&gt; (Stack Int -&gt; a)
+interpret = eval . view
+    where
+    eval :: ProgramView StackInstruction a -&gt; (Stack Int -&gt; a)
+    eval (Push a :&gt;&gt;= is) stack     = interpret (is ()) (a:stack)
+    eval (Pop    :&gt;&gt;= is) (a:stack) = interpret (is a ) stack
+    eval (Return a)       stack     = a
+</code></pre>
+<p>So-called &quot;view functions&quot; like <code>view</code> are a common way of inspecting data structures that have been made abstract for reasons of efficiency; see for example <code>viewL</code> and <code>viewR</code> in <a href="http://hackage.haskell.org/package/containers-0.3.0.0"><code>Data.Sequence</code></a>.</p>
+<h2 id="efficiency"><a href="#TOC"><span class="header-section-number">2.2</span> Efficiency</a></h2>
+<p>Compared to the original type from the tutorial, <code>Program</code> now supports <code>&gt;&gt;=</code> in O(1) time in most use cases. This means that left-biased nesting like</p>
+<pre><code>let
+    nestLeft :: Int -&gt; StackProgram Int
+    nestLeft 0 = return 0
+    nestLeft n = nestLeft (n-1) &gt;&gt;= push
+in
+    interpret (nestLeft n) []
+</code></pre>
+<p>will now take O(n) time. In contrast, the old <code>Program</code> type from the tutorial would have taken O(n^2) time, similar to <code>++</code> for lists taking quadratic time in when nested to the left.</p>
+<p>However, this does <em>not</em> hold in a <em>persistent</em> setting. In particular, the example</p>
+<pre><code>let
+    p  = nestLeft n
+    v1 = view p
+    v2 = view p
+    v3 = view p
+in
+    v1 `seq` v2 `seq` v3
+</code></pre>
+<p>will take O(n) time for each call of <code>view</code> instead of O(n) the first time and O(1) for the other calls. But since monads are usually used ephemerally, this is much less a restriction than it would be for lists and <code>++</code>.</p>
+<h2 id="monad-transformers"><a href="#TOC"><span class="header-section-number">2.3</span> Monad Transformers</a></h2>
+<p>Furthermore, <code>Program</code> is actually a type synonym and expressed in terms of a monad transformer <code>ProgramT</code></p>
+<pre><code>type Program instr a = ProgramT instr Identity a
+</code></pre>
+<p>Likewise, <code>view</code> is a specialization of <code>viewT</code> to the identity monad. This change is transparent (except for error messages on type errors) for users who are happy with just <code>Program</code> but very convenient for those users who want to use it as a monad transformer.</p>
+<p>The key point about the transformer version <code>ProgramT</code> is that in addition to the monad laws, it automatically satisfies the lifting laws for monad transformers as well</p>
+<pre><code>lift . return        =  return
+lift m &gt;&gt;= lift . g  =  lift (m &gt;&gt;= g)
+</code></pre>
+<p>The corresponding view function <code>viewT</code> now returns the type <code>m (ViewT instr m a)</code>. It's not immediately apparent why this return type will do, but it's straightforward to work with, like in the following implementation of the list monad transformer:</p>
+<pre><code>data PlusI m a where
+    Zero :: PlusI m a
+    Plus :: ListT m a -&gt; ListT m a -&gt; PlusI m a
+
+type ListT m a = ProgramT (PlusI m) m a
+
+runList :: Monad m =&gt; ListT m a -&gt; m [a]
+runList = eval &lt;=&lt; viewT
+    where
+    eval :: Monad m =&gt; ProgramViewT (PlusI m) m a -&gt; m [a]
+    eval (Return x)        = return [x]
+    eval (Zero     :&gt;&gt;= k) = return []
+    eval (Plus m n :&gt;&gt;= k) =
+        liftM2 (++) (runList (m &gt;&gt;= k)) (runList (n &gt;&gt;= k))
+</code></pre>
+<h2 id="alternatives-to-monad-transformers"><a href="#TOC"><span class="header-section-number">2.4</span> Alternatives to Monad Transformers</a></h2>
+<p>By the way, note that monad transformers are not the only way to build larger monads from smaller ones; a similar effect can be achieved with the direct sum of instructions sets. For instance, the monad</p>
+<pre><code>Program (StateI s :+: ExceptionI e) a
+
+data (f :+: g) a = Inl (f a) | Inr (g a)  -- a fancy  Either
+</code></pre>
+<p>is a combination of the state monad</p>
+<pre><code>type State a = Program (StateI s) a
+
+data StateI s a where
+    Put :: s -&gt; StateI s ()
+    Get :: StateI s s
+</code></pre>
+<p>and the error monad</p>
+<pre><code>type Error e a = Program (ErrorI e) a
+
+data ErrorI e a where
+    Throw :: e -&gt; ErrorI e ()
+    Catch :: ErrorI e a -&gt; (e -&gt; ErrorI e a) -&gt; ErrorI e a
+</code></pre>
+<p>The &quot;sum of signatures&quot; approach and the <code>(:+:)</code> type constructor are advocated in <a href="http://www.cse.chalmers.se/~wouter/Publications/DataTypesALaCarte.pdf" title="Wouter Swierstra. Data types &#224; la carte.">Wouter Swierstra's &quot;Data Types a la carte&quot;</a>. Time will tell which has more merit; for now I have opted for a seamless interaction with monad transformers.</p>
+<h1 id="design-and-implementation"><a href="#TOC"><span class="header-section-number">3</span> Design and Implementation</a></h1>
+<h2 id="proof-of-the-monad-laws-sketch"><a href="#TOC"><span class="header-section-number">3.1</span> Proof of the monad laws (Sketch)</a></h2>
+<p>The key point of this library is of course that the <code>view</code> and <code>viewT</code> functions respect the monad laws. While this seems obvious from the definition, the proof is actually not straightforward.</p>
+<p>First, we restrict ourselves to <code>view</code>, i.e. the version without monad transformers. In fact, I don't have a full proof for the version with monad transformers, more about that in the next section.</p>
+<p>Second, we use a sloppy, but much more suitable notation, namely we write</p>
+<table>
+<tbody>
+<tr class="odd">
+<td align="left"><code>&gt;&gt;=</code></td>
+<td align="center">instead of <code>Bind</code></td>
+</tr>
+<tr class="even">
+<td align="left"><code>return</code></td>
+<td align="center">instead of <code>Lift</code> for the identity monad</td>
+</tr>
+<tr class="odd">
+<td align="left"><code>i,j,k,</code>...</td>
+<td align="center">for primitive instructions</td>
+</tr>
+</tbody>
+</table>
+<p>Then, the <code>view</code> function becomes</p>
+<pre><code>view (return a)        = Return a
+view (return a  &gt;&gt;= g) = g a                           -- left unit
+view ((m &gt;&gt;= f) &gt;&gt;= g) = view (m &gt;&gt;= (\x -&gt; f x &gt;&gt;= g) -- associativity
+view (i         &gt;&gt;= g) = i :&gt;&gt;= g
+view  i                = i :&gt;&gt;= return                 -- right unit
+</code></pre>
+<p>Clearly, <code>view</code> uses the monad laws to rewrite it's argument. But we want to show that whenever two expressions</p>
+<pre><code>e1,e2 :: Program instr a
+</code></pre>
+<p>can be transformed into each other by rewriting them with the monad laws in <em>any</em> fashion (remember that <code>&gt;&gt;=</code> and <code>return</code> are constructors), then <code>view</code> will map them to the same result. More formally, we have an equivalence relation</p>
+<pre><code>e1 ~ e2   iff   e1 and e2 are the same modulo monad laws
+</code></pre>
+<p>and want to show</p>
+<pre><code>e1 ~ e2  =&gt;   view e1 = view e2    (some notion of equality)
+</code></pre>
+<p>Now, this needs proof because <code>view</code> is like a term rewriting system and there is no guarantee that two equivalent terms will be rewritten to the same normal form.</p>
+<p>Trying to attack this problem with term rewriting and critical pairs is probably hopeless and not very enlightening. After all, the theorem should be obvious because two equivalent expressions should have the same <em>first instruction</em> <code>i</code>. Well, we can formalize this with the help of a <em>normal form</em></p>
+<pre><code>data NF instr a where
+    Return' :: a -&gt; NF instr a
+    (:&gt;&gt;=') :: instr a -&gt; (a -&gt; NF instr b) -&gt; NF instr b
+</code></pre>
+<p>This is the old program type and the key observation is that <code>NF instr</code> is already a monad.</p>
+<pre><code>instance Monad (NF inst) where
+    (Return' a) &gt;&gt;= g = g a
+    (m :&gt;&gt;=' f) &gt;&gt;= g = m :&gt;&gt;= (\x -&gt; f x &gt;&gt;= g)
+</code></pre>
+<p>(I'll skip the short calculation and coinduction argument that this really fulfills the monad laws.) We can define a normalization function</p>
+<pre><code>normalize :: Program instr a -&gt; NF instr a
+normalize (m &gt;&gt;= g)  = normalize m &gt;&gt;=' normalize g
+normalize (return a) = Return' a
+normalize  i         = i :&gt;&gt;=' Return'
+</code></pre>
+<p>which has the now obvious property that</p>
+<pre><code>e1 ~ e2  =&gt;  normalize e1 = normalize e2
+</code></pre>
+<p>Now, the return type of <code>view</code> is akin to a <em>head normal form</em>, hence</p>
+<pre><code>   normalize (view e1) = normalize (view e2) 
+=&gt; view e1 = view e2
+</code></pre>
+<p>(for some suitable extension of <code>normalize</code> to the <code>ProgramView</code> type.) But since <code>view</code> only uses monad laws to rewrite its argument, we also have</p>
+<pre><code>e1 ~ view e1  =&gt;  normalize e1 = normalize (view e1)
+</code></pre>
+<p>and this concludes the proof, which pretty much only showed that two equivalent expressions have the same instruction list and hence <code>view</code> gives equal results.</p>
+<h2 id="monad-transformers-1"><a href="#TOC"><span class="header-section-number">3.2</span> Monad Transformers</a></h2>
+<p>The monad transformer case is more hairy, I have no proof here. (If you read this by accident: don't worry, it's still correct. This is for proof nerds only.)</p>
+<p>The main difficulty is that the equation</p>
+<pre><code>return = lift . return
+</code></pre>
+<p>is an equation for the already existing <code>return</code> constructor and the notion of &quot;first instruction&quot; no longer applies. Namely, we have</p>
+<pre><code>m  =  return m &gt;&gt;= id  =  lift (return m) &gt;&gt;= id
+</code></pre>
+<p>and it's not longer clear what a suitable normal form might be. It appears that <code>viewT</code> rewrites the term as follows</p>
+<pre><code>  lift m &gt;&gt;= g
+= lift m &gt;&gt;= (\x -&gt; lift (return (g x)) &gt;&gt;= id)
+= (lift m &gt;&gt;= lift . return . g) &gt;&gt;= id
+= lift (m &gt;&gt;= return . g) &gt;&gt;= id
+</code></pre>
+<p>(To be continued.)</p>
+<h1 id="other-design-choices"><a href="#TOC"><span class="header-section-number">4</span> Other Design Choices</a></h1>
+<h2 id="recursive-type-definitions-with-program"><a href="#TOC"><span class="header-section-number">4.1</span> Recursive type definitions with <code>Program</code></a></h2>
+<p>In the <a href="http://web.cecs.pdx.edu/~cklin/papers/unimo-143.pdf" title="Chuan-kai Lin. Programming Monads Operationally with Unimo.">unimo paper</a>, the instructions carry an additional parameter that &quot;unties&quot; recursive type definition. For example, the instructions for <code>MonadPlus</code> are written</p>
+<pre><code>data PlusI unimo a where
+    Zero :: PlusI unimo a
+    Plus :: unimo a -&gt; unimo a -&gt; PlusI unimo a
+</code></pre>
+<p>The type constructor variable <code>unimo</code> will be tied to <code>Unimo PlusI</code>.</p>
+<p>In this library, I have opted for the conceptually simpler approach that requires the user to tie the recursion himself</p>
+<pre><code>data PlusI a where
+    Zero :: PlusI a
+    Plus :: Program PlusI a -&gt; Program PlusI a -&gt; Plus I a
+</code></pre>
+<p>I am not sure whether this has major consequences for composeablity; at the moment I believe that the former style can always be recovered from an implementation in the latter style.</p>
+</body>
+</html>
